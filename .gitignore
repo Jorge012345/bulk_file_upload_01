@@ -1,0 +1,7 @@
+__pycache__/
+venv/
+.serverless
+.pytest_cache
+node_modules
+package-lock.json
+package.json
