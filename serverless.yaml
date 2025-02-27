@@ -74,3 +74,132 @@ functions:
       - http:
           method: any
           path: /
+
+resources:
+  Resources:
+    ArtifactBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: my-codepipeline-artifacts-bucket-us-east-1
+        VersioningConfiguration:
+          Status: Enabled
+    CodePipelineRole:
+      Type: AWS::IAM::Role
+      Properties:
+        RoleName: bulk-file-upload-codepipeline-role
+        AssumeRolePolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service:
+                  - codepipeline.amazonaws.com
+                  - codebuild.amazonaws.com
+              Action:
+                - sts:AssumeRole
+        Policies:
+          - PolicyName: CodePipelinePolicy
+            PolicyDocument:
+              Version: "2012-10-17"
+              Statement:
+                - Effect: Allow
+                  Action:
+                    - s3:ListBucket
+                    - s3:GetObject
+                    - s3:PutObject
+                  Resource:
+                    - "arn:aws:s3:::my-codepipeline-artifacts-bucket"
+                    - "arn:aws:s3:::my-codepipeline-artifacts-bucket/*"
+
+                - Effect: Allow
+                  Action:
+                    - codebuild:StartBuild
+                    - codebuild:BatchGetBuilds
+                    - codebuild:StopBuild
+                  Resource: "*"
+
+                - Effect: Allow
+                  Action:
+                    - iam:PassRole
+                    - sts:AssumeRole
+                  Resource: "*"
+
+                - Effect: Allow
+                  Action:
+                    - logs:CreateLogGroup
+                    - logs:CreateLogStream
+                    - logs:PutLogEvents
+                  Resource:
+                    - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/*"
+    CodeBuildTestProject:
+      Type: AWS::CodeBuild::Project
+      Properties:
+        Name: bulk-file-upload-tests
+        Description: "Ejecución de pruebas automatizadas con pytest"
+        ServiceRole: !GetAtt CodePipelineRole.Arn
+        Artifacts:
+          Type: CODEPIPELINE
+        Environment:
+          ComputeType: BUILD_GENERAL1_SMALL
+          Image: aws/codebuild/standard:7.0
+          Type: LINUX_CONTAINER
+          EnvironmentVariables:
+            - Name: STAGE
+              Value: ${self:provider.stage}
+        Source:
+          Type: CODEPIPELINE
+        TimeoutInMinutes: 10
+    MyPipeline:
+      Type: AWS::CodePipeline::Pipeline
+      Properties:
+        Name: bulk-file-upload
+        RoleArn: !GetAtt CodePipelineRole.Arn
+        ArtifactStore:
+          Type: S3
+          Location: my-codepipeline-artifacts-bucket-us-east-1
+        Stages:
+          - Name: Source
+            Actions:
+              - Name: GitHubSource
+                ActionTypeId:
+                  Category: Source
+                  Owner: ThirdParty
+                  Provider: GitHub
+                  Version: "1"
+                OutputArtifacts:
+                  - Name: SourceOutput
+                Configuration:
+                  Owner: "Jorge012345"  # Cambia esto por tu usuario de GitHub
+                  Repo: "bulk_file_upload_01"
+                  Branch: "develop"  # 🔹 Solo se activará cuando haya commits en `develop`
+                  OAuthToken: "{{resolve:secretsmanager:github-token}}"  # Usa un secreto en AWS Secrets Manager
+                  PollForSourceChanges: false  # Recomendado para usar Webhooks
+                RunOrder: 1
+
+          - Name: Test
+            Actions:
+              - Name: RunTests
+                ActionTypeId:
+                  Category: Test
+                  Owner: AWS
+                  Provider: CodeBuild
+                  Version: "1"
+                InputArtifacts:
+                  - Name: SourceOutput
+                Configuration:
+                  ProjectName: "bulk-file-upload-tests"
+                RunOrder: 2
+
+          - Name: Deploy
+            Actions:
+              - Name: DeployLambda
+                ActionTypeId:
+                  Category: Build
+                  Owner: AWS
+                  Provider: CodeBuild
+                  Version: "1"
+                InputArtifacts:
+                  - Name: SourceOutput
+                Configuration:
+                  ProjectName: "bulk-file-upload-deploy"
+                RunOrder: 3
